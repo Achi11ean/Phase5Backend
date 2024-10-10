@@ -1,5 +1,5 @@
-from .. import CURSOR, CONN
-from .event import Event  # Importing Event model
+from lib import CURSOR, CONN
+from lib.models.event import Event  # Importing Event model
 
 class Tour:
     all = {}

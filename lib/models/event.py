@@ -1,4 +1,4 @@
-from .. import CURSOR, CONN  #import the cursor and connection objects from the database module
+from lib import CURSOR, CONN  #import the cursor and connection objects from the database module
  
 
 class Event:

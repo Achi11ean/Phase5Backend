@@ -1,13 +1,14 @@
 # lib/cli.py
-#importing all classes necessary
-from .models.event import Event
-from .models.attendee import Attendee
-from .models.venue import Venue
-from .models.tour import Tour
-from .models.artist import Artist  # Add the Artist import
+from lib.models.event import Event
+from lib.models.attendee import Attendee
+from lib.models.venue import Venue
+from lib.models.tour import Tour
+from lib.models.artist import Artist  # Add the Artist import
+from lib.models.song import Song  # Add the Song import
 from rich.console import Console
 from rich.table import Table
-from .models.song import Song  # Add the Song import
+from lib import commit_and_close
+
 
 #initialize the Rich console for styled outputs
 console = Console()

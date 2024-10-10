@@ -1,7 +1,8 @@
-from .. import CURSOR, CONN
-from .song import Song  # Import the Song model
-from .event import Event
-from .attendee import Attendee
+from lib import CURSOR, CONN
+from lib.models.song import Song  # Correctly import the Song model from lib.models
+from lib.models.event import Event
+from lib.models.attendee import Attendee
+
 
 class Artist:
     all = {}

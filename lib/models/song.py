@@ -1,4 +1,4 @@
-from .. import CURSOR, CONN
+from lib import CURSOR, CONN
 
 class Song:
     all = {}
