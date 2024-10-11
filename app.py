@@ -1,17 +1,25 @@
-from flask import Flask, jsonify, request 
-from flask_sqlalchemy import SQLAlchemy 
+# app.py
+from flask import Flask, jsonify, request
 from flask_migrate import Migrate
-from flask_cors import CORS  
+from flask_cors import CORS
 from datetime import datetime
+from lib.models.database import db  # Import db from the new database module
+from associations import attendee_events, attendee_favorites
+from sqlalchemy_serializer import SerializerMixin  # Import SerializerMixin
+
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///main.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.json.compact = False
-db = SQLAlchemy(app)
+
+# Initialize the db with the app
+db.init_app(app)
 migrate = Migrate(app, db)
 CORS(app)
-class Venue(db.Model):
+
+
+class Venue(db.Model, SerializerMixin):
     __tablename__ = "venues"
     id = db.Column(db.Integer, primary_key = True)
     name = db.Column(db.String(100), nullable = False)
@@ -19,9 +27,15 @@ class Venue(db.Model):
     email = db.Column(db.String(100), nullable = False)
     earnings = db.Column(db.String(100), nullable = False)
     
-    
     def to_dict(self):
-        return {"id": self.id, "name": self.name, "organizer": self.organizer, "email": self.email, "earnings": self.earnings }
+        return {
+            'id': self.id,
+            'name': self.name,
+            'organizer': self.organizer,
+            'email': self.email,
+            'earnings': self.earnings,
+            'events': [{'id': event.id, 'name': event.name} for event in self.events]  # Simplified event details
+        }
 # Update the decorators to use @app.route() instead of app.get()
 
 @app.get("/venues")
@@ -102,10 +116,9 @@ def search_venues_by_name():
         else:
             return jsonify({"error": "No venues found with that name"}), 404
     return jsonify({"error": "Venue name not provided"}), 400
-
 # ------------------------Events----------------------------------#
 
-class Event(db.Model):
+class Event(db.Model, SerializerMixin):
     __tablename__ = "events"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -116,21 +129,21 @@ class Event(db.Model):
     venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
 
     venue = db.relationship('Venue', backref='events')
+    attendees = db.relationship('Attendee', secondary='attendee_events', back_populates='attended_events')
+    favorited_by = db.relationship('Attendee', secondary='attendee_favorites', back_populates='favorite_events')
 
     def to_dict(self):
+        # Limit attendee details to prevent recursion
         return {
-            "id": self.id,
-            "name": self.name,
-            "date": self.date,
-            "time": self.time,
-            "location": self.location,
-            "description": self.description,
-            "venue": {
-                "id": self.venue.id,
-                "name": self.venue.name
-            }
+            'id': self.id,
+            'name': self.name,
+            'date': self.date,
+            'time': self.time,
+            'location': self.location,
+            'description': self.description,
+            'venue': {'id': self.venue.id, 'name': self.venue.name},
+            'attendees': [{'id': attendee.id, 'first_name': attendee.first_name} for attendee in self.attendees],  # Simplified attendee details
         }
-
 # GET all events
 @app.get("/events")
 def get_events():
@@ -229,5 +242,100 @@ def search_events_by_name():
         else:
             return jsonify({"error": "No events found with that name"}), 404
     return jsonify({"error": "Event name not provided"}), 400
+
+
+#---------------------------------ATTENDEES----------------------------#
+
+
+# Attendee Model
+class Attendee(db.Model, SerializerMixin):
+    __tablename__ = "attendees"
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(100), nullable=False)
+    last_name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    preferred_event_type = db.Column(db.String(100), nullable=True)
+
+    # Relationships
+    attended_events = db.relationship('Event', secondary='attendee_events', back_populates='attendees')
+    favorite_events = db.relationship('Event', secondary='attendee_favorites', back_populates='favorited_by', lazy='dynamic')
+
+    def to_dict(self):
+        # Limit event details to prevent recursion
+        return {
+            'id': self.id,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'email': self.email,
+            'preferred_event_type': self.preferred_event_type,
+            'favorite_events': [{'id': event.id, 'name': event.name} for event in self.favorite_events],  # Simplified event details
+        }
+# POST: Create new attendee with favorite events
+@app.post("/attendees")
+def create_attendee():
+    data = request.get_json()
+
+    try:
+        # Create new attendee object
+        new_attendee = Attendee(
+            first_name=data['first_name'],
+            last_name=data['last_name'],
+            email=data['email'],
+            preferred_event_type=data.get('preferred_event_type')  # Optional
+        )
+
+        # Assign favorite events (if provided)
+        if 'favorite_event_ids' in data:
+            favorite_events = Event.query.filter(Event.id.in_(data['favorite_event_ids'])).all()
+            new_attendee.favorite_events.extend(favorite_events)  # Use extend to add the events
+
+        db.session.add(new_attendee)
+        db.session.commit()
+        return jsonify(new_attendee.to_dict()), 201
+    except Exception as exception:
+        return jsonify({"error": str(exception)}), 400
+# GET: Retrieve all attendees
+@app.get("/attendees")
+def get_all_attendees():
+    attendees = Attendee.query.all()
+    return jsonify([attendee.to_dict() for attendee in attendees]), 200
+
+@app.patch("/attendees/<int:id>")
+def update_attendee(id):
+    data = request.json
+    attendee = Attendee.query.filter(Attendee.id == id).first()
+    if attendee:
+        try:
+            # Update fields
+            for key in data:
+                if key != 'favorite_event_ids':  # We'll handle favorite_event_ids separately
+                    setattr(attendee, key, data[key])
+
+            # Update favorite events
+            if 'favorite_event_ids' in data:
+                favorite_events = Event.query.filter(Event.id.in_(data['favorite_event_ids'])).all()
+                attendee.favorite_events = favorite_events  # Update the relationship
+
+            db.session.add(attendee)
+            db.session.commit()
+            return jsonify(attendee.to_dict()), 200
+        except Exception as exception:
+            return jsonify({"error": str(exception)}), 400
+    else:
+        return jsonify({"error": "Attendee ID not found"}), 404
+
+# DELETE: Remove an attendee by ID
+@app.delete('/attendees/<int:id>')
+def delete_attendee(id):
+    attendee = Attendee.query.filter(Attendee.id == id).first()
+    if attendee:
+        try:
+            db.session.delete(attendee)
+            db.session.commit()
+            return jsonify({}), 204
+        except Exception as exception:
+            return jsonify({"error": str(exception)}), 400
+    else:
+        return jsonify({"error": "Attendee ID not found"}), 404
 if __name__ == '__main__':
     app.run(port=5001, debug=True)
