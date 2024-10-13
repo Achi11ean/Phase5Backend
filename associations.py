@@ -21,3 +21,7 @@ artist_favorites = db.Table('artist_favorites',
     db.Column('attendee_id', db.Integer, db.ForeignKey('attendees.id')),
     db.Column('artist_id', db.Integer, db.ForeignKey('artists.id'))
 )
+tour_events = db.Table('tour_events',
+    db.Column('tour_id', db.Integer, db.ForeignKey('tours.id'), primary_key=True),
+    db.Column('event_id', db.Integer, db.ForeignKey('events.id'), primary_key=True)
+)

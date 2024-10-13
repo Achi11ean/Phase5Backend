@@ -4,8 +4,10 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 from datetime import datetime
 from lib.models.database import db  # Import db from the new database module
-from associations import attendee_events, attendee_favorites, artist_favorites
+from associations import attendee_events, attendee_favorites, artist_favorites, tour_events
 from sqlalchemy_serializer import SerializerMixin  # Import SerializerMixin
+from sqlalchemy.orm import relationship
+from sqlalchemy import ForeignKey  # Add this line
 
 
 app = Flask(__name__)
@@ -34,7 +36,7 @@ class Venue(db.Model, SerializerMixin):
             'organizer': self.organizer,
             'email': self.email,
             'earnings': self.earnings,
-            'events': [{'id': event.id, 'name': event.name} for event in self.events]  # Simplified event details
+        'events': [{'id': event.id, 'name': event.name} for event in self.events] if self.events else []
         }
 # Update the decorators to use @app.route() instead of app.get()
 
@@ -93,14 +95,19 @@ def delete_venue(id):
     venue = Venue.query.filter(Venue.id == id).first()
     if venue:
         try:
+            # Delete all associated events first
+            for event in venue.events:
+                db.session.delete(event)
+
+            # Now delete the venue
             db.session.delete(venue)
             db.session.commit()
             return jsonify({}), 204
         except Exception as exception:
+            db.session.rollback()  # Rollback in case of error
             return jsonify({"error": str(exception)}), 400
     else:
         return jsonify({"error": "Venue ID not found."}), 404
-    
 @app.get("/venues/search")
 def search_venues_by_name():
     venue_name = request.args.get('name')
@@ -132,6 +139,7 @@ class Event(db.Model, SerializerMixin):
     attendees = db.relationship('Attendee', secondary='attendee_events', back_populates='attended_events')
     favorited_by = db.relationship('Attendee', secondary='attendee_favorites', back_populates='favorite_events')
     artists = db.relationship('Artist', secondary='artist_events', back_populates='events')
+    tours = db.relationship('Tour', secondary='tour_events', back_populates='events')
 
     def to_dict(self):
         return {
@@ -158,11 +166,17 @@ def get_events():
 @app.post("/events")
 def create_event():
     data = request.get_json()
+    
     try:
         # Verify if the venue exists
         venue = Venue.query.get(data['venue_id'])
         if not venue:
             return jsonify({"error": "Venue not found"}), 404
+        
+        # Check for duplicate event names
+        existing_event = Event.query.filter(Event.name == data['name']).first()
+        if existing_event:
+            return jsonify({"error": "Event name must be unique."}), 400
 
         # Parse date and time to proper datetime format
         event_date = datetime.strptime(data['date'], '%Y-%m-%d')
@@ -199,7 +213,6 @@ def get_event_by_id(id):
     else:
         return jsonify({"error": "Event ID not found"}), 404
 
-# PATCH to update an event by ID
 @app.patch("/events/<int:id>")
 def update_event(id):
     data = request.json
@@ -209,16 +222,24 @@ def update_event(id):
             # If date is provided, ensure it's in the correct format
             if 'date' in data:
                 event.date = datetime.strptime(data['date'], '%Y-%m-%d')
-            
+
             # Update the other fields
             for key in data:
                 if key != "date":  # Skip date since we already handled it
                     setattr(event, key, data[key])
-                    
-            db.session.add(event)
+            
+            # Update artists if artist_ids is provided
+            if 'artist_ids' in data:
+                # Clear existing artists
+                event.artists.clear()
+                # Fetch new artists based on provided artist_ids
+                artists = Artist.query.filter(Artist.id.in_(data['artist_ids'])).all()
+                event.artists.extend(artists)  # Add new artists
+
             db.session.commit()
             return jsonify(event.to_dict()), 200
         except Exception as exception:
+            db.session.rollback()  # Rollback on error
             return jsonify({"error": str(exception)}), 400
     else:
         return jsonify({"error": "Event ID not found"}), 404
@@ -238,19 +259,23 @@ def delete_event(id):
 
 @app.get("/events/search")
 def search_events_by_name():
-    event_name = request.args.get('name')
-    if event_name:
+    search_term = request.args.get('searchTerm')  # Accept a single search parameter
+    if search_term:
         # Normalize the input: strip spaces and convert to lowercase
-        event_name_normalized = event_name.strip().lower()
+        search_term_normalized = search_term.strip().lower()
         
-        # Use ilike for case-insensitive search and strip spaces on database values too
-        events = Event.query.filter(Event.name.ilike(f'%{event_name_normalized}%')).all()
+        # Search for events by name, location, or event type
+        events = Event.query.filter(
+            (Event.name.ilike(f'%{search_term_normalized}%')) |
+            (Event.location.ilike(f'%{search_term_normalized}%')) |
+            (Event.event_type.ilike(f'%{search_term_normalized}%'))
+        ).all()
         
         if events:
             return jsonify([event.to_dict() for event in events]), 200
         else:
-            return jsonify({"error": "No events found with that name"}), 404
-    return jsonify({"error": "Event name not provided"}), 400
+            return jsonify({"error": "No events found with that search term"}), 404
+    return jsonify({"error": "Search term not provided"}), 400
 
 
 #---------------------------------ATTENDEES----------------------------#
@@ -277,7 +302,9 @@ class Attendee(db.Model, SerializerMixin):
             'last_name': self.last_name,
             'email': self.email,
             'favorite_events': [{'id': event.id, 'name': event.name} for event in self.favorite_events] if self.favorite_events else [],
-            'favorite_event_types': self.favorite_event_types.split(',') if isinstance(self.favorite_event_types, str) else [],
+            'favorite_event_types': (
+            self.favorite_event_types.split(',') if isinstance(self.favorite_event_types, str) and self.favorite_event_types else []
+            ),
             'favorite_artists': [{'id': artist.id, 'name': artist.name} for artist in self.favorite_artists] if self.favorite_artists else [],
         }
 # POST: Create new attendee with favorite events
@@ -569,7 +596,143 @@ def get_artist_by_id(id):
     else:
         return jsonify({"error": "Artist ID not found"}), 404
 
+#-------------------------------#Tours--------------------#
+class Tour(db.Model, SerializerMixin):
+    __tablename__ = "tours"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    start_date = db.Column(db.Date, nullable=False)
+    end_date = db.Column(db.Date, nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey('venues.id'))  # For venues
+    created_by_artist_id = db.Column(db.Integer, db.ForeignKey('artists.id'))  # For artists
+    social_media_handles = db.Column(db.String(255), nullable=True)
 
+    events = relationship("Event", secondary=tour_events, back_populates='tours')
+    created_by = relationship("Venue", foreign_keys=[created_by_id], backref='tours_created')  # Relationship for venues
+    created_by_artist = relationship("Artist", foreign_keys=[created_by_artist_id], backref='tours_created')  # Relationship for artists
 
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'start_date': self.start_date.strftime('%Y-%m-%d'),
+            'end_date': self.end_date.strftime('%Y-%m-%d'),
+            'description': self.description,
+            'created_by': self.created_by.name if self.created_by else None,  # Show name of the venue
+            'created_by_artist': self.created_by_artist.name if self.created_by_artist else None,  # Show name of the artist
+            'social_media_handles': self.social_media_handles,
+            'events': [{'name': event.name} for event in self.events] if self.events else [],
+        }
+@app.post("/tours")
+def create_tour():
+    data = request.get_json()
+
+    try:
+        # Ensure either created_by_id or created_by_artist_id is provided
+        if not data.get('created_by_id') and not data.get('created_by_artist_id'):
+            return jsonify({"error": "Either a venue or an artist must be specified as the creator."}), 400
+        
+        new_tour = Tour(
+            name=data['name'],
+            start_date=datetime.strptime(data['start_date'], '%Y-%m-%d'),
+            end_date=datetime.strptime(data['end_date'], '%Y-%m-%d'),
+            description=data['description'],
+            social_media_handles=data.get('social_media_handles'),  # Optional
+            created_by_id=data.get('created_by_id'),  # Venue
+            created_by_artist_id=data.get('created_by_artist_id')  # Artist
+        )
+
+        # Assign events to the tour
+        if 'event_ids' in data:
+            events = Event.query.filter(Event.id.in_(data['event_ids'])).all()
+            new_tour.events.extend(events)
+
+        db.session.add(new_tour)
+        db.session.commit()
+
+        return jsonify(new_tour.to_dict()), 201
+
+    except Exception as exception:
+        return jsonify({"error": str(exception)}), 400
+
+@app.get("/tours")
+def get_all_tours():
+    try:
+        tours = Tour.query.all()
+        return jsonify([tour.to_dict() for tour in tours]), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.patch("/tours/<int:id>")
+def update_tour(id):
+    data = request.get_json()
+    tour = Tour.query.get(id)
+    
+    if tour:
+        try:
+            for key in ['name', 'description', 'social_media_handles']:
+                if key in data:
+                    setattr(tour, key, data[key])
+
+            # Update created_by_id or created_by_artist_id
+            if 'created_by_id' in data:
+                tour.created_by_id = data['created_by_id']
+            if 'created_by_artist_id' in data:
+                tour.created_by_artist_id = data['created_by_artist_id']
+
+            # Update event associations if provided
+            if 'event_ids' in data:
+                events = Event.query.filter(Event.id.in_(data['event_ids'])).all()
+                tour.events = events  # Reassign events to the tour
+
+            db.session.commit()
+            return jsonify(tour.to_dict()), 200
+        except Exception as exception:
+            db.session.rollback()
+            return jsonify({"error": str(exception)}), 400
+    else:
+        return jsonify({"error": "Tour ID not found"}), 404
+
+@app.delete("/tours/<int:id>")
+def delete_tour(id):
+    tour = Tour.query.get(id)
+    if tour:
+        try:
+            db.session.delete(tour)
+            db.session.commit()
+            return jsonify({}), 204
+        except Exception as exception:
+            return jsonify({"error": str(exception)}), 400
+    else:
+        return jsonify({"error": "Tour ID not found"}), 404
+
+@app.get("/tours/<int:id>")
+def get_tour(id):
+    tour = Tour.query.get(id)
+    if tour:
+        return jsonify(tour.to_dict()), 200
+    else:
+        return jsonify({"error": "Tour not found"}), 404
+    
+@app.get("/tours/search")
+def search_tours():
+    search_term = request.args.get('searchTerm')  # Accept a single search parameter
+    if search_term:
+        # Normalize the input: strip spaces and convert to lowercase
+        search_term_normalized = search_term.strip().lower()
+        
+        # Search for tours by name, artist name, or venue name
+        tours = Tour.query.filter(
+            (Tour.name.ilike(f'%{search_term_normalized}%')) |
+            (Tour.created_by_artist.has(Artist.name.ilike(f'%{search_term_normalized}%'))) |
+            (Tour.created_by.has(Venue.name.ilike(f'%{search_term_normalized}%')))
+        ).all()
+        
+        if tours:
+            return jsonify([tour.to_dict() for tour in tours]), 200
+        else:
+            return jsonify({"error": "No tours found with that search term"}), 404
+    return jsonify({"error": "Search term not provided"}), 400
 if __name__ == '__main__':
     app.run(port=5001, debug=True)
