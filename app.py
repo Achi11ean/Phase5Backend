@@ -1,33 +1,69 @@
 # app.py
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, session, abort
 from flask_migrate import Migrate
 from flask_cors import CORS
 from datetime import datetime
-from lib.models.database import db  # Import db from the new database module
-from associations import attendee_events, attendee_favorites, artist_favorites, tour_events
+from flask_sqlalchemy import SQLAlchemy
+# from associations import attendee_events, attendee_favorites, artist_favorites, tour_events
 from sqlalchemy_serializer import SerializerMixin  # Import SerializerMixin
 from sqlalchemy.orm import relationship
-from sqlalchemy import ForeignKey  # Add this line
+from sqlalchemy import Table, Column, Integer, ForeignKey  # Add this line
+from flask_bcrypt import Bcrypt
+from dotenv import load_dotenv  # Import load_dotenv
+import os  # Import os
+import re
 
+load_dotenv()
+
+db = SQLAlchemy()
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///main.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.json.compact = False
 
+app.secret_key = os.getenv('SECRET_KEY', 'default_secret_key')
+
 # Initialize the db with the app
 db.init_app(app)
 migrate = Migrate(app, db)
-CORS(app)
+bcrypt = Bcrypt(app)
+CORS(app, supports_credentials=True)
 
+attendee_events = Table('attendee_events', db.metadata,
+    Column('attendee_id', Integer, ForeignKey('attendees.id'), primary_key=True),
+    Column('event_id', Integer, ForeignKey('events.id'), primary_key=True)
+)
 
+attendee_favorites = Table(
+    'attendee_favorites', db.metadata,
+    Column('attendee_id', Integer, ForeignKey('attendees.id'), primary_key=True),
+    Column('event_id', Integer, ForeignKey('events.id'), primary_key=True)
+)
+# Association table for artist and events
+artist_events = Table('artist_events', db.Model.metadata,
+    Column('artist_id', Integer, ForeignKey('artists.id'), primary_key=True),
+    Column('event_id', Integer, ForeignKey('events.id'), primary_key=True)
+)
+# Association table for artist and attendees
+artist_favorites = db.Table('artist_favorites',
+    db.Column('attendee_id', db.Integer, db.ForeignKey('attendees.id')),
+    db.Column('artist_id', db.Integer, db.ForeignKey('artists.id'))
+)
+tour_events = db.Table('tour_events',
+    db.Column('tour_id', db.Integer, db.ForeignKey('tours.id'), primary_key=True),
+    db.Column('event_id', db.Integer, db.ForeignKey('events.id'), primary_key=True)
+)
+
+# ------------------------Venue----------------------------------#
 class Venue(db.Model, SerializerMixin):
     __tablename__ = "venues"
-    id = db.Column(db.Integer, primary_key = True)
-    name = db.Column(db.String(100), nullable = False)
-    organizer = db.Column(db.String(100), nullable = False)
-    email = db.Column(db.String(100), nullable = False)
-    earnings = db.Column(db.String(100), nullable = False)
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    organizer = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(100), nullable=False)
+    earnings = db.Column(db.String(100), nullable=False)
+    description = db.Column(db.Text, nullable=True)  # Added description column
     
     def to_dict(self):
         return {
@@ -36,14 +72,21 @@ class Venue(db.Model, SerializerMixin):
             'organizer': self.organizer,
             'email': self.email,
             'earnings': self.earnings,
-        'events': [{'id': event.id, 'name': event.name} for event in self.events] if self.events else []
+            'description': self.description,  # Include description in the dictionary
+            'events': [{'id': event.id, 'name': event.name} for event in self.events] if self.events else []
         }
 # Update the decorators to use @app.route() instead of app.get()
-
 @app.get("/venues")
 def index():
-    return jsonify ([
-        { "id": venue.id, "name": venue.name, "organizer": venue.organizer, "email": venue.email, "earnings": venue.earnings}
+    return jsonify([
+        { 
+            "id": venue.id, 
+            "name": venue.name, 
+            "organizer": venue.organizer, 
+            "email": venue.email, 
+            "earnings": venue.earnings, 
+            "description": venue.description  # Include description
+        }
         for venue in Venue.query.all()
     ]), 200
 
@@ -56,7 +99,8 @@ def create_venue():
             name=data['name'],
             organizer=data['organizer'],
             email=data['email'],
-            earnings=data['earnings']
+            earnings=data['earnings'],
+            description=data.get('description')  # Get description, defaulting to None if not provided
         )
         # Add to the database
         db.session.add(new_venue)
@@ -66,6 +110,7 @@ def create_venue():
         return jsonify(Venue.query.order_by(Venue.id.desc()).first().to_dict()), 201
     except Exception as exception:
         return jsonify({"error": str(exception)}), 400
+    
 @app.get("/venues/<int:id>")
 def get_venue_by_id(id):
     venue = db.session.get(Venue, id)
@@ -77,14 +122,14 @@ def get_venue_by_id(id):
 @app.patch("/venues/<int:id>")
 def update_venue(id):
     data = request.json
-    venue = Venue.query.filter(Venue.id ==id).first()
+    venue = Venue.query.filter(Venue.id == id).first()
     if venue:
         try:
             for key in data:
                 setattr(venue, key, data[key])
             db.session.add(venue)
             db.session.commit()
-            return jsonify(Venue.query.filter(Venue.id ==id).first().to_dict()), 200
+            return jsonify(venue.to_dict()), 200
         except Exception as exception:
             return jsonify({"error": str(exception)}), 400
     else:
@@ -281,7 +326,6 @@ def search_events_by_name():
 #---------------------------------ATTENDEES----------------------------#
 
 
-# Attendee Model
 class Attendee(db.Model, SerializerMixin):
     __tablename__ = "attendees"
     id = db.Column(db.Integer, primary_key=True)
@@ -290,6 +334,7 @@ class Attendee(db.Model, SerializerMixin):
     email = db.Column(db.String(120), unique=True, nullable=False)
     preferred_event_type = db.Column(db.String(100), nullable=True)
     favorite_event_types = db.Column(db.Text, nullable=True)
+    social_media = db.Column(db.JSON, nullable=True)  # Change to JSON type
     
     favorite_artists = db.relationship('Artist', secondary='artist_favorites', back_populates='favorited_by')
     attended_events = db.relationship('Event', secondary='attendee_events', back_populates='attendees')
@@ -306,6 +351,7 @@ class Attendee(db.Model, SerializerMixin):
             self.favorite_event_types.split(',') if isinstance(self.favorite_event_types, str) and self.favorite_event_types else []
             ),
             'favorite_artists': [{'id': artist.id, 'name': artist.name} for artist in self.favorite_artists] if self.favorite_artists else [],
+            'social_media': self.social_media  # This will now return an array of objects
         }
 # POST: Create new attendee with favorite events
 @app.post("/attendees")
@@ -323,7 +369,8 @@ def create_attendee():
             first_name=data['first_name'],
             last_name=data['last_name'],
             email=data['email'],
-            preferred_event_type=data.get('preferred_event_type')  # Optional
+            preferred_event_type=data.get('preferred_event_type'),  # Optional
+            social_media=data.get('social_media')  # Get social media, defaulting to None if not provided
         )
 
         # Assign favorite events (if provided)
@@ -368,7 +415,7 @@ def update_attendee(id):
     if attendee:
         try:
             # Update direct fields
-            for key in ['first_name', 'last_name', 'email', 'preferred_event_type']:
+            for key in ['first_name', 'last_name', 'email', 'preferred_event_type', 'social_media']:
                 if key in data:
                     setattr(attendee, key, data[key])
 
@@ -393,7 +440,6 @@ def update_attendee(id):
             return jsonify({"error": str(exception)}), 400
     else:
         return jsonify({"error": "Attendee ID not found"}), 404
-
 # DELETE: Remove an attendee by ID
 @app.delete('/attendees/<int:id>')
 def delete_attendee(id):
@@ -456,6 +502,7 @@ def favorite_artist(attendee_id, artist_id):
         return jsonify({"message": "Artist favorited successfully"}), 201
     else:
         return jsonify({"error": "Attendee or Artist not found"}), 404
+
 
 
 #--------------------------------------------------ARTISTS---------------------------------------------------#
@@ -642,8 +689,8 @@ def create_tour():
         
         new_tour = Tour(
             name=data['name'],
-            start_date=datetime.strptime(data['start_date'], '%m/%d/%Y'),  # Adjusted to parse MM/DD/YYYY
-            end_date=datetime.strptime(data['end_date'], '%m/%d/%Y'), 
+            start_date=datetime.strptime(data['start_date'], '%Y-%m-%d'),  # Adjusted to parse YYYY-MM-DD
+            end_date=datetime.strptime(data['end_date'], '%Y-%m-%d'),
             description=data['description'],
             social_media_handles=data.get('social_media_handles'),  # Optional
             created_by_id=data.get('created_by_id'),  # Venue
@@ -662,6 +709,7 @@ def create_tour():
 
     except Exception as exception:
         return jsonify({"error": str(exception)}), 400
+
 
 @app.get("/tours")
 def get_all_tours():
@@ -684,9 +732,10 @@ def update_tour(id):
 
         # Update dates if provided
         if 'start_date' in data:
-            tour.start_date = datetime.strptime(data['start_date'], '%m/%d/%Y')  # Ensure correct format
+            tour.start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')  # Correct format
         if 'end_date' in data:
-            tour.end_date = datetime.strptime(data['end_date'], '%m/%d/%Y')  # Ensure correct format
+            tour.end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')  # Correct format
+
 
         # Update created_by_id or created_by_artist_id
         if 'created_by_id' in data:
@@ -704,8 +753,10 @@ def update_tour(id):
         return jsonify(tour.to_dict()), 200
     except Exception as exception:
         db.session.rollback()
-        print("Error updating tour:", str(exception))  # Log the error
-        return jsonify({"error": str(exception)}), 400
+        error_message = f"Error updating tour: {str(exception)}"
+        print(error_message)  # Log the error
+        return jsonify({"error": error_message}), 400
+
 @app.delete("/tours/<int:id>")
 def delete_tour(id):
     tour = Tour.query.get(id)
@@ -741,3 +792,133 @@ def search_tours_by_name():
     return jsonify({"error": "Tour name not provided"}), 400
 if __name__ == '__main__':
     app.run(port=5001, debug=True)
+
+#-------------------------------#User--------------------#
+class User(db.Model):
+    __tablename__ = "users"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), nullable=False, unique=True)
+    password_hash = db.Column(db.String(128), nullable=False)
+    user_type = db.Column(db.String(50), nullable=False)  # 'artist', 'attendee', etc.
+
+    @property
+    def password(self):
+        raise AttributeError('Password is not a readable attribute.')
+
+    @password.setter
+    def password(self, plaintext_password):
+        self.password_hash = bcrypt.generate_password_hash(plaintext_password).decode('utf-8')
+
+    def verify_password(self, plaintext_password):
+        return bcrypt.check_password_hash(self.password_hash, plaintext_password)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'username': self.username,
+            'user_type': self.user_type
+        }
+def validate_password(password):
+    """
+    Validates the password against the defined criteria.
+    Raises a 400 Bad Request error with an appropriate message if validation fails.
+    """
+    if not password:
+        abort(400, description="Password is required.")
+
+    if len(password) < 8:
+        abort(400, description="Password must be at least 8 characters long.")
+
+    if len(password) > 128:
+        abort(400, description="Password must not exceed 128 characters.")
+
+    if not re.search(r'[A-Z]', password):
+        abort(400, description="Password must contain at least one uppercase letter.")
+
+    if not re.search(r'[a-z]', password):
+        abort(400, description="Password must contain at least one lowercase letter.")
+
+    if not re.search(r'\d', password):
+        abort(400, description="Password must contain at least one digit.")
+
+    if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+        abort(400, description="Password must contain at least one special character (!@#$%^&*(),.?\":{}|<>).")
+
+    
+@app.post('/signup')
+def signup():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    user_type = data.get('user_type')
+
+    if not all([username, password, user_type]):
+        return jsonify({'error': 'Username, password, and user type are required.'}), 400
+
+    # Check if username already exists
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error': 'Username already exists.'}), 400
+    
+    try:
+        validate_password(password)
+    except Exception as e:
+        # Flask's abort will handle sending the error response
+        raise e
+
+    new_user = User(
+        username=username,
+        user_type=user_type
+    )
+    new_user.password = password  # This will hash the password
+
+    db.session.add(new_user)
+    db.session.commit()
+
+    # Log the user in by setting the session
+    session['user_id'] = new_user.id
+    session['user_type'] = new_user.user_type
+
+    return jsonify(new_user.to_dict()), 201
+
+@app.post('/signin')
+def signin():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    if not all([username, password]):
+        return jsonify({'error': 'Username and password are required.'}), 400
+
+    user = User.query.filter_by(username=username).first()
+
+    if user and user.verify_password(password):
+        # Log the user in by setting the session
+        session['user_id'] = user.id
+        session['user_type'] = user.user_type
+        return jsonify(user.to_dict()), 200
+    else:
+        return jsonify({'error': 'Invalid username or password.'}), 401
+
+@app.post('/signout')
+def signout():
+    session.pop('user_id', None)
+    session.pop('user_type', None)
+    return jsonify({'message': 'Signed out successfully.'}), 200
+
+@app.errorhandler(400)
+def bad_request(error):
+    return jsonify({"error": error.description}), 400
+
+@app.errorhandler(401)
+def unauthorized(error):
+    return jsonify({"error": error.description}), 401
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": error.description}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "An unexpected error occurred."}), 500
+
+    
