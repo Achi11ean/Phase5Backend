@@ -689,8 +689,8 @@ def create_tour():
         
         new_tour = Tour(
             name=data['name'],
-            start_date=datetime.strptime(data['start_date'], '%Y-%m-%d'),  # Adjusted to parse YYYY-MM-DD
-            end_date=datetime.strptime(data['end_date'], '%Y-%m-%d'),
+            start_date=datetime.strptime(data['start_date'], '%m/%d/%Y'),  # Adjusted to parse YYYY-MM-DD
+            end_date=datetime.strptime(data['end_date'], '%m/%d/%Y'),
             description=data['description'],
             social_media_handles=data.get('social_media_handles'),  # Optional
             created_by_id=data.get('created_by_id'),  # Venue
@@ -732,9 +732,9 @@ def update_tour(id):
 
         # Update dates if provided
         if 'start_date' in data:
-            tour.start_date = datetime.strptime(data['start_date'], '%Y-%m-%d')  # Correct format
+            tour.start_date = datetime.strptime(data['start_date'], '%m/%d/%Y')  # Correct format
         if 'end_date' in data:
-            tour.end_date = datetime.strptime(data['end_date'], '%Y-%m-%d')  # Correct format
+            tour.end_date = datetime.strptime(data['end_date'], '%m/%d/%Y')  # Correct format
 
 
         # Update created_by_id or created_by_artist_id
@@ -800,6 +800,7 @@ class User(db.Model):
     username = db.Column(db.String(150), nullable=False, unique=True)
     password_hash = db.Column(db.String(128), nullable=False)
     user_type = db.Column(db.String(50), nullable=False)  # 'artist', 'attendee', etc.
+    profile_completed = db.Column(db.Boolean, default=False)  # New field
 
     @property
     def password(self):
@@ -816,7 +817,8 @@ class User(db.Model):
         return {
             'id': self.id,
             'username': self.username,
-            'user_type': self.user_type
+            'user_type': self.user_type,
+            'profile_completed': self.profile_completed  # Include this in the response
         }
 def validate_password(password):
     """
@@ -867,7 +869,8 @@ def signup():
 
     new_user = User(
         username=username,
-        user_type=user_type
+        user_type=user_type,
+        profile_completed=False  # Set profile_completed to False initially
     )
     new_user.password = password  # This will hash the password
 
@@ -879,6 +882,7 @@ def signup():
     session['user_type'] = new_user.user_type
 
     return jsonify(new_user.to_dict()), 201
+
 
 @app.post('/signin')
 def signin():
@@ -895,15 +899,34 @@ def signin():
         # Log the user in by setting the session
         session['user_id'] = user.id
         session['user_type'] = user.user_type
-        return jsonify(user.to_dict()), 200
+
+        # Return user details including profile_completed status
+        return jsonify({
+            'id': user.id,
+            'username': user.username,
+            'user_type': user.user_type,
+            'profile_completed': user.profile_completed
+        }), 200
     else:
         return jsonify({'error': 'Invalid username or password.'}), 401
+
 
 @app.post('/signout')
 def signout():
     session.pop('user_id', None)
     session.pop('user_type', None)
     return jsonify({'message': 'Signed out successfully.'}), 200
+
+@app.patch('/complete-profile/<int:user_id>')
+def complete_profile(user_id):
+    user = User.query.get(user_id)
+    if user:
+        user.profile_completed = True  # Mark profile as complete
+        db.session.commit()
+        return jsonify(user.to_dict()), 200
+    else:
+        return jsonify({"error": "User not found"}), 404
+
 
 @app.errorhandler(400)
 def bad_request(error):
