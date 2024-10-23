@@ -177,7 +177,7 @@ class Event(db.Model, SerializerMixin):
     time = db.Column(db.String(50), nullable=False)
     location = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(150), nullable=False)
-    venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=True)
+    venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
     event_type = db.Column(db.String(50), nullable=False)
 
     venue = db.relationship('Venue', backref='events')
@@ -213,12 +213,10 @@ def create_event():
     data = request.get_json()
     
     try:
-        # Optional venue check
-        venue = None
-        if 'venue_id' in data and data['venue_id'] is not None:
-            venue = Venue.query.get(data['venue_id'])
-            if not venue:
-                return jsonify({"error": "Venue not found"}), 404
+        # Verify if the venue exists
+        venue = Venue.query.get(data['venue_id'])
+        if not venue:
+            return jsonify({"error": "Venue not found"}), 404
         
         # Check for duplicate event names
         existing_event = Event.query.filter(Event.name == data['name']).first()
@@ -229,15 +227,15 @@ def create_event():
         event_date = datetime.strptime(data['date'], '%Y-%m-%d')
         event_time = data['time']  # Assuming time remains a string (HH:MM format)
 
-        # Create a new event object, setting venue_id to None if not provided
+        # Create a new event object
         new_event = Event(
             name=data['name'],
             date=event_date,
             time=event_time,
             location=data['location'],
             description=data['description'],
-            venue_id=data.get('venue_id', None),  # Allow venue_id to be None
-            event_type=data['event_type']
+            venue_id=data['venue_id'],
+            event_type=data['event_type']  # Add this line
         )
 
         # Assign artists (if provided)
