@@ -213,8 +213,10 @@ def create_event():
     data = request.get_json()
     
     try:
+        if 'venue_id' in data and data['venue_id'] is not None:
+       
         # Verify if the venue exists
-        venue = Venue.query.get(data['venue_id'])
+            venue = Venue.query.get(data['venue_id'])
         if not venue:
             return jsonify({"error": "Venue not found"}), 404
         
