@@ -177,7 +177,7 @@ class Event(db.Model, SerializerMixin):
     time = db.Column(db.String(50), nullable=False)
     location = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(150), nullable=False)
-    venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=False)
+    venue_id = db.Column(db.Integer, db.ForeignKey('venues.id'), nullable=True)
     event_type = db.Column(db.String(50), nullable=False)
 
     venue = db.relationship('Venue', backref='events')
