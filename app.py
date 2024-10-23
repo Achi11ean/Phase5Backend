@@ -217,8 +217,8 @@ def create_event():
        
         # Verify if the venue exists
             venue = Venue.query.get(data['venue_id'])
-        if not venue:
-            return jsonify({"error": "Venue not found"}), 404
+            if not venue:
+                return jsonify({"error": "Venue not found"}), 404
         
         # Check for duplicate event names
         existing_event = Event.query.filter(Event.name == data['name']).first()
