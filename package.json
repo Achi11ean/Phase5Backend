@@ -1,0 +1,20 @@
+{
+  "name": "phase4project",
+  "version": "1.0.0",
+  "description": "## Backend for Event Management App",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Achi11ean/Phase5Backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Achi11ean/Phase5Backend/issues"
+  },
+  "homepage": "https://github.com/Achi11ean/Phase5Backend#readme"
+}
